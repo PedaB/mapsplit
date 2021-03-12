@@ -20,7 +20,7 @@ apply plugin: 'java'
 apply plugin: "jacoco"
 apply plugin: 'eclipse'
 
-version = '0.3.0'
+version = '0.4.0'
 
 repositories {
     jcenter()
@@ -58,7 +58,7 @@ sonarqube {
 }
 
 test{
-    maxHeapSize = "6G"
+    maxHeapSize = "12G"
 }
 
 dependencies {
@@ -69,6 +69,7 @@ dependencies {
     compile 'org.imintel:mbtiles4j:1.1.0'
     compile 'org.jetbrains:annotations:15.0'
     compile 'com.zaxxer:SparseBitSet:1.1'
+    compile 'org.xerial.larray:larray_2.12:0.4.0'
     testCompile 'junit:junit:4.12'
 }
 

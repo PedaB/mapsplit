@@ -68,7 +68,7 @@ OpenStreetMap and the magnifying glass logo are trademarks of the OpenStreetMap 
                           and '%z' that will be replaced with the tile zoom level.
     -p,--polygon <arg>    only save tiles that intersect or lie within the
                           given polygon file.
-    -s,--size <arg>       n,w,r the size for the node-, way- and relation
+    -s,--size <arg>       n,w,r the initial size for the node-, way- and relation
                           maps to use (should be at least twice the number of
                           IDs). If not supplied, defaults will be used.
     -t,--timing           output timing information

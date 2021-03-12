@@ -13,6 +13,7 @@ package dev.osm.mapsplit;
  */
 
 import java.util.Collection;
+import java.util.Iterator;
 import java.util.List;
 
 public interface OsmMap {
@@ -111,12 +112,12 @@ public interface OsmMap {
      * 
      * @return the capacity of this map
      */
-    public int getCapacity();
+    public long getCapacity();
 
     /**
-     * Return all the keys
+     * Return an Iterator for the keys
      * 
-     * @return a List holding all the keys from the map
+     * @return an Iterator for the keys
      */
-    public List<Long> keys();
+    public Iterator<Long> keyIterator();
 }

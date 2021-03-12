@@ -16,10 +16,18 @@ package dev.osm.mapsplit;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Iterator;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.TreeSet;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import org.jetbrains.annotations.NotNull;
+
+import dev.osm.mapsplit.array.PrimitiveLongArray;
+import dev.osm.mapsplit.array.JavaArray;
+import dev.osm.mapsplit.array.LargeArray;
 
 // @formatter:off
 /**
@@ -52,6 +60,8 @@ import org.jetbrains.annotations.NotNull;
 // @formatter:on
 @SuppressWarnings("unchecked")
 public class HeapMap implements OsmMap {
+    
+    private static final Logger LOGGER = Logger.getLogger(LargeArray.class.getName());
 
     // used on keys
     private static final int  BUCKET_FULL_SHIFT = 63;
@@ -66,17 +76,17 @@ public class HeapMap implements OsmMap {
 
     private static final int   TILE_EXT_SHIFT            = 24;
     private static final long  TILE_EXT_MASK             = 1l << TILE_EXT_SHIFT;
-    private static final long  TILE_MARKER_MASK          = 0xFFFFFFl;
+    static final long          TILE_MARKER_MASK          = 0xFFFFFFl;
     private static final int   NEIGHBOUR_SHIFT           = TILE_EXT_SHIFT + 1;
     private static final long  NEIGHBOUR_MASK            = 3l << NEIGHBOUR_SHIFT;
     private static final float DEFAULT_FILL_FACTOR       = 0.75f;
     private static final int   INITIAL_EXTENDED_SET_SIZE = 1000;
 
-    private int capacity;
+    private long capacity;
 
-    private int    size = 0;
-    private long[] keys;
-    private long[] values;
+    private long  size = 0;
+    private PrimitiveLongArray keys;
+    private PrimitiveLongArray values;
 
     private int     extendedBuckets = 0;
     private int[][] extendedSet     = new int[INITIAL_EXTENDED_SET_SIZE][];
@@ -84,7 +94,7 @@ public class HeapMap implements OsmMap {
     private long  hits       = 0;
     private long  misses     = 0;
     private float fillFactor = DEFAULT_FILL_FACTOR;
-    private int   threshold;
+    private long  threshold;
 
     class HeapMapError extends Error {
         private static final long serialVersionUID = 1L;
@@ -104,7 +114,7 @@ public class HeapMap implements OsmMap {
      * 
      * @param capacity the (fixed) capacity of the map
      */
-    public HeapMap(int capacity) {
+    public HeapMap(long capacity) {
         this(capacity, DEFAULT_FILL_FACTOR);
     }
 
@@ -114,16 +124,27 @@ public class HeapMap implements OsmMap {
      * @param capacity the (fixed) capacity of the map
      * @param fill fill factor to use
      */
-    public HeapMap(int capacity, float fill) {
+    public HeapMap(long capacity, float fill) {
         this.capacity = capacity;
-        keys = new long[capacity];
-        values = new long[capacity];
+        keys = getArray(capacity);
+        values = getArray(capacity);
         fillFactor = fill;
-        threshold = (int) (capacity * fillFactor);
+        threshold = (long) (capacity * fillFactor);
+        MapSplit.setupLogging(LOGGER);
+    }
+
+    /**
+     * Get an array appropriate for the given length
+     * 
+     * @param length the size of the array
+     * @return an appropriate instance implementing PrimitiveLongArray
+     */
+    private static PrimitiveLongArray getArray(long length) {
+        return length > Integer.MAX_VALUE ? new LargeArray(length) : new JavaArray(length);
     }
 
     @Override
-    public int getCapacity() {
+    public long getCapacity() {
         return capacity;
     }
 
@@ -139,7 +160,7 @@ public class HeapMap implements OsmMap {
 
     @Override
     public int neighbour(long value) {
-        return (int) ((value & NEIGHBOUR_MASK) >> NEIGHBOUR_SHIFT);
+        return (int) ((value & NEIGHBOUR_MASK) >>> NEIGHBOUR_SHIFT);
     }
 
     /**
@@ -148,8 +169,8 @@ public class HeapMap implements OsmMap {
      * @param key the key
      * @return the hash for key
      */
-    private static long KEY(long key) {
-        return 0x7fffffff & (int) (1664525 * key + 1013904223);
+    private static long hash(long key) {
+        return 0x7fffffffffffffffL & (1664525L * key + 1013904223L);
     }
 
     /*
@@ -162,24 +183,32 @@ public class HeapMap implements OsmMap {
         if (key < 0) {
             throw new IllegalArgumentException("Ids are limited to positive longs");
         }
-        int count = 0;
-
-        int bucket = (int) (KEY(key) % capacity);
         long value = ((long) tileX) << TILE_X_SHIFT | ((long) tileY) << TILE_Y_SHIFT | ((long) neighbours) << NEIGHBOUR_SHIFT;
+        put(key, value);
+    }
 
+    /**
+     * Put a key and the value in to the map
+     * 
+     * @param key the key
+     * @param value the value
+     */
+    private void put(long key, long value) {
+        if (size > threshold) {
+            expand(capacity * 2);
+        }
+        long bucket = hash(key) % capacity;
+        long count = 0;
         while (true) {
-            if (values[bucket] == 0) {
-                keys[bucket] = key;
-                values[bucket] = value;
+            if (values.get(bucket) == 0l) {
+                keys.set(bucket, key);
+                values.set(bucket, value);
                 size++;
                 return;
             }
-            if (size > threshold) {
-                throw new HeapMapError("HashMap filled up, increase the (static) capacity!");
-            }
             if (count == 0) {
                 // mark bucket as "overflow bucket"
-                keys[bucket] |= BUCKET_FULL_MASK;
+                keys.set(bucket, keys.get(bucket) | BUCKET_FULL_MASK);
             }
             bucket++;
             count++;
@@ -188,18 +217,44 @@ public class HeapMap implements OsmMap {
     }
 
     /**
+     * Expand the map to a larger capacity
+     * 
+     * @param newCapacity the new capacity
+     */
+    private void expand(long newCapacity) {
+        LOGGER.log(Level.INFO, "Expanding array current {0}, new {1}, current size {2}, current threshold {3}", new Object[] { capacity, newCapacity, size, threshold });
+        PrimitiveLongArray oldKeys = keys;
+        PrimitiveLongArray oldValues = values;
+        long oldCapacity = capacity;
+        capacity = newCapacity;
+        keys = getArray(capacity);
+        values = getArray(capacity);
+        threshold = (long) (capacity * fillFactor);
+        size = 0; // reset
+        for (long i = 0; i < oldCapacity; i++) {
+            long value = oldValues.get(i);
+            if (value != 0) {
+                final long key = oldKeys.get(i) & ~BUCKET_FULL_MASK;
+                put(key, value);
+            }
+        }
+        oldKeys.free();
+        oldValues.free();
+    }
+
+    /**
      * Get the bucket index for the value
      * 
      * @param key the key
      * @return the index of -1 if not found
      */
-    private int getBucket(long key) {
-        int count = 0;
-        int bucket = (int) (KEY(key) % capacity);
+    private long getBucket(long key) {
+        long count = 0;
+        long bucket = hash(key) % capacity;
 
         while (true) {
-            if (values[bucket] != 0l) {
-                if ((keys[bucket] & KEY_MASK) == key) {
+            if (values.get(bucket) != 0l) {
+                if ((keys.get(bucket) & KEY_MASK) == key) {
                     hits++;
                     return bucket;
                 }
@@ -209,7 +264,7 @@ public class HeapMap implements OsmMap {
 
             if (count == 0) {
                 // we didn't have an overflow so the value is not stored yet
-                if (keys[bucket] >= 0l) {
+                if (keys.get(bucket) >= 0l) {
                     return -1;
                 }
             }
@@ -228,13 +283,12 @@ public class HeapMap implements OsmMap {
      */
     @Override
     public long get(long key) {
-        int bucket = getBucket(key);
+        long bucket = getBucket(key);
 
         if (bucket == -1) {
             return 0;
         }
-
-        return values[bucket];
+        return values.get(bucket);
     }
 
     /**
@@ -310,8 +364,8 @@ public class HeapMap implements OsmMap {
      * @param bucket the index of the value
      * @param tiles the List of additional tiles
      */
-    private void extendToNeighbourSet(int bucket, @NotNull Collection<Long> tiles) {
-        long val = values[bucket];
+    private void extendToNeighbourSet(long bucket, @NotNull Collection<Long> tiles) {
+        long val = values.get(bucket);
 
         if ((val & TILE_MARKER_MASK) != 0) {
             // add current stuff to tiles list
@@ -342,7 +396,7 @@ public class HeapMap implements OsmMap {
 
         val |= 1l << TILE_EXT_SHIFT;
         val |= (long) cur;
-        values[bucket] = val;
+        values.set(bucket, val);
 
         extendedSet[cur] = new int[0];
 
@@ -357,11 +411,11 @@ public class HeapMap implements OsmMap {
     @Override
     public void update(long key, @NotNull Collection<Long> tiles) {
 
-        int bucket = getBucket(key);
+        long bucket = getBucket(key);
         if (bucket == -1) {
             return;
         }
-        long val = values[bucket];
+        long val = values.get(bucket);
         int tx = tileX(val);
         int ty = tileY(val);
 
@@ -424,7 +478,7 @@ public class HeapMap implements OsmMap {
         if (extend) {
             extendToNeighbourSet(bucket, tiles);
         } else {
-            values[bucket] = val;
+            values.set(bucket, val);
         }
     }
 
@@ -523,7 +577,7 @@ public class HeapMap implements OsmMap {
     public double getLoad() {
         int count = 0;
         for (int i = 0; i < capacity; i++) {
-            if (values[i] != 0) {
+            if (values.get(i) != 0) {
                 count++;
             }
         }
@@ -541,13 +595,40 @@ public class HeapMap implements OsmMap {
     }
 
     @Override
-    public List<Long> keys() {
-        List<Long> result = new ArrayList<>();
-        for (int i = 0; i < keys.length; i++) {
-            if (values[i] != 0) {
-                result.add(keys[i] & KEY_MASK);
+    public Iterator<Long> keyIterator() {
+        return new Iterator<Long>() {
+            long i = -1;
+            final long length = keys.length();
+            
+            @Override
+            public boolean hasNext() {              
+                if (i < length - 1) {
+                    long next = i + 1;
+                    long nextValue = values.get(next);
+                    while (nextValue==0 && next < length - 1) {
+                        next++;
+                        nextValue = values.get(next);
+                    }
+                    return nextValue!=0;
+                }
+                return false;
             }
-        }
-        return result;
+
+            @Override
+            public Long next() {
+                if (i < length - 1) {
+                    i++;
+                    long nextValue = values.get(i);
+                    while (nextValue == 0 && i < length - 1) {
+                        i++;
+                        nextValue = values.get(i);
+                    }
+                    if  (nextValue!=0) {
+                        return keys.get(i) & KEY_MASK;
+                    }
+                }     
+                throw new NoSuchElementException();
+            }
+        };
     }
 }
